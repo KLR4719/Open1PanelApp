@@ -1,0 +1,106 @@
+# GitHub Actions: 构建 Android arm64-v8a Release APK (Android SDK 36)
+# 说明:
+# - 使用 Flutter (默认 3.16.0，可按需要调整)
+# - 安装并使用 Android SDK Platform 36 和 Build Tools 36.0.0
+# - 生成针对 arm64-v8a 的 APK: build/app/outputs/flutter-apk/app-arm64-v8a-release.apk
+# - 可选：通过 secrets 提供 ANDROID_KEYSTORE_BASE64 / KEYSTORE_PASSWORD / KEY_ALIAS / KEY_PASSWORD 来对 APK 进行签名
+name: Build Android arm64-v8a APK (SDK 36)
+
+on:
+  push:
+    branches:
+      - main
+      - master
+  workflow_dispatch:
+
+env:
+  FLUTTER_VERSION: "3.16.0"    # 可改为项目需要的 Flutter 版本
+  ANDROID_API_LEVEL: "36"
+  ANDROID_BUILD_TOOLS: "36.0.0"
+
+jobs:
+  build-apk:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Cache Gradle
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.gradle/caches
+            ~/.gradle/wrapper
+          key: gradle-${{ runner.os }}-${{ hashFiles('**/gradle-wrapper.properties', '**/*.gradle*') }}
+          restore-keys: |
+            gradle-${{ runner.os }}-
+
+      - name: Cache Pub & Flutter
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.pub-cache
+            ~/.flutter
+          key: pub-${{ runner.os }}-${{ hashFiles('**/pubspec.yaml') }}
+          restore-keys: |
+            pub-${{ runner.os }}-
+
+      - name: Set up JDK 17
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: 17
+
+      - name: Set up Flutter
+        uses: subosito/flutter-action@v2
+        with:
+          flutter-version: ${{ env.FLUTTER_VERSION }}
+          channel: stable
+
+      - name: Install Android SDK packages (platform-tools, platforms;android-36, build-tools)
+        env:
+          ANDROID_SDK_ROOT: ${{ env.ANDROID_SDK_ROOT }}
+        run: |
+          # Accept licenses and install required SDK components
+          yes | sdkmanager --licenses || true
+          sdkmanager "platform-tools" "platforms;android-${{ env.ANDROID_API_LEVEL }}" "build-tools;${{ env.ANDROID_BUILD_TOOLS }}"
+
+      - name: Optional: Setup signing keystore from secret
+        if: ${{ secrets.ANDROID_KEYSTORE_BASE64 != '' }}
+        run: |
+          # expects secrets:
+          # - ANDROID_KEYSTORE_BASE64 : base64 encoded keystore (.jks/.keystore)
+          # - KEYSTORE_PASSWORD
+          # - KEY_ALIAS
+          # - KEY_PASSWORD
+          mkdir -p android/app
+          echo "${{ secrets.ANDROID_KEYSTORE_BASE64 }}" | base64 --decode > android/app/upload-keystore.jks
+          cat > android/key.properties <<EOF
+storePassword=${{ secrets.KEYSTORE_PASSWORD }}
+keyPassword=${{ secrets.KEY_PASSWORD }}
+keyAlias=${{ secrets.KEY_ALIAS }}
+storeFile=app/upload-keystore.jks
+EOF
+          echo "Key store and android/key.properties created."
+
+      - name: Flutter pub get
+        run: flutter pub get
+
+      - name: Build APK (arm64-v8a, split per ABI)
+        run: |
+          # 使用 split-per-abi 生成各 ABI 对应的独立 apk，arm64-v8a 的 apk 路径为:
+          # build/app/outputs/flutter-apk/app-arm64-v8a-release.apk
+          flutter build apk --release --target-platform=android-arm64 --split-per-abi
+
+      - name: Upload arm64-v8a APK artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: app-arm64-v8a-release.apk
+          path: build/app/outputs/flutter-apk/app-arm64-v8a-release.apk
+
+      - name: Upload all generated APKs (optional)
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: all-apks
+          path: build/app/outputs/flutter-apk/
